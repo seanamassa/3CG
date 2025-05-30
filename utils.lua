@@ -1,7 +1,7 @@
--- utils.lua
+-- utils
 local Utils = {}
 
--- Simple function to clone a table (useful for creating card instances)
+-- Simple function to clone a table 
 function Utils.shallow_clone(original)
   local copy = {}
   for k, v in pairs(original) do

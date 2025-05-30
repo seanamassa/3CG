@@ -1,7 +1,7 @@
--- game.lua
-local Player = require("game_logic.player")
-local Location = require("game_logic.location")
-local Card = require("game_logic.card") -- Though cards are mainly created via player decks
+-- game
+local Player = require("player")
+local Location = require("location")
+local Card = require("card")
 
 local Game = {}
 Game.__index = Game
@@ -18,12 +18,12 @@ function Game.new()
     Location.new(3, "Aegean Sea")
   }
   self.current_turn = 0
-  self.winning_score = 20 -- As decided
+  self.winning_score = 20 
   self.game_over = false
   self.winner = nil
-  self.priority_player_idx = nil -- 1 or 2 (index in self.players table)
+  self.priority_player_idx = nil 
 
-  self.all_card_instances = {} -- map of card.unique_id_in_game -> card_object
+  self.all_card_instances = {} 
   self.next_card_unique_id = 1 -- Counter for unique card IDs within a game session
 
   -- Initialize player slots at locations
@@ -49,7 +49,7 @@ end
 function Game:setup_game()
   print("Setting up game...")
   for _, player in ipairs(self.players) do
-    player:create_deck(_G.CARD_DATABASE, self) -- Pass self (the game instance)
+    player:create_deck(_G.CARD_DATABASE, self) 
   end
   -- Starting hand (3 cards)
   for _ = 1, 3 do
@@ -76,9 +76,10 @@ function Game:start_turn_procedure()
 
 
   for _, player in ipairs(self.players) do
-    player.mana = self.current_turn
+    player.mana = self.current_turn + (player.mana_next_turn_bonus or 0)
+    player.mana_next_turn_bonus = 0
     print(player.name .. " mana set to " .. player.mana)
-    player:draw_card(self) -- Both players draw (rule: including turn one)
+    player:draw_card(self)
   end
 end
 
@@ -99,7 +100,7 @@ function Game:reveal_phase_procedure()
     self:determine_priority_player()
 
     local first_player = self.players[self.priority_player_idx]
-    local second_player_idx = (self.priority_player_idx % 2) + 1 -- Works for 1->2, 2->1
+    local second_player_idx = (self.priority_player_idx % 2) + 1 
     local second_player = self.players[second_player_idx]
 
     local function reveal_for_player(player_to_reveal)
@@ -110,8 +111,7 @@ function Game:reveal_phase_procedure()
                 if card then
                     card.is_revealed = true
                     print("  - Revealed " .. card.name .. " (Power: " .. card:get_display_power() .. ") at Loc " .. play_info.location_idx .. ", Slot " .. play_info.slot_idx)
-                    if card.ability_on_reveal then
-                        -- IMPORTANT: The 'player' argument here is the one who OWNS and PLAYED the card.
+                    if card.ability_on_reveal then -- The 'player' argument here is the one who OWNS and PLAYED the card.
                         card.ability_on_reveal(card, self, player_to_reveal, play_info.location_idx)
                     end
                     -- TODO: Activate ongoing abilities if applicable
@@ -189,7 +189,7 @@ function Game:check_win_condition_procedure()
   if p1_met_score and p2_met_score then
     if self.players[1].score > self.players[2].score then self.winner = self.players[1]
     elseif self.players[2].score > self.players[1].score then self.winner = self.players[2]
-    else print("Game ends in a SCORE TIE! (Both >= " .. self.winning_score .. " with same score)") -- Or specific tie-break
+    else print("Game ends in a SCORE TIE! (Both >= " .. self.winning_score .. " with same score)") 
     end
   elseif p1_met_score then self.winner = self.players[1]
   elseif p2_met_score then self.winner = self.players[2]
@@ -198,7 +198,7 @@ function Game:check_win_condition_procedure()
   if self.winner then
     self.game_over = true
     print("\nGAME OVER! " .. self.winner.name .. " wins with " .. self.winner.score .. " points!")
-  elseif self.current_turn >= 20 then -- Arbitrary turn limit
+  elseif self.current_turn >= 20 then
       self.game_over = true; print("\nGAME OVER! Turn limit (20) reached.")
       if self.players[1].score > self.players[2].score then self.winner = self.players[1]; print(self.players[1].name .. " wins.")
       elseif self.players[2].score > self.players[1].score then self.winner = self.players[2]; print(self.players[2].name .. " wins.")
@@ -214,9 +214,9 @@ function Game:discard_card_from_play(card_instance, player_who_owns_card, locati
         return false
     end
 
-    location.slots[player_who_owns_card.id][slot_idx_card_is_in] = nil -- Remove from slot
+    location.slots[player_who_owns_card.id][slot_idx_card_is_in] = nil 
     table.insert(player_who_owns_card.discard_pile, card_instance)
-    card_instance.is_revealed = false -- Reset state
+    card_instance.is_revealed = false 
     card_instance.location_idx = nil
     card_instance.slot_idx = nil
     print("  " .. card_instance.name .. " moved from play (Loc " .. location_idx_card_is_at .. ", Slot " .. slot_idx_card_is_in .. ") to " .. player_who_owns_card.name .. "'s discard pile.")

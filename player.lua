@@ -1,6 +1,6 @@
--- player.lua
-local Utils = require("utils") -- Or "your_project_name.utils" if in a subdir
-local Card = require("game_logic.card") -- To create card instances
+-- player
+local Utils = require("utils")
+local Card = require("card")
 
 local Player = {}
 Player.__index = Player
@@ -15,13 +15,14 @@ function Player.new(id, name)
   self.mana = 0
   self.score = 0
   self.max_hand_size = 7
+  self.mana_next_turn_bonus = 0
   return self
 end
 
-function Player:create_deck(card_definitions_db, game_instance_ref) -- Pass the game instance for card registration
+function Player:create_deck(card_definitions_db, game_instance_ref) 
   local deck_card_names = {}
-  -- Example: 2 of each of the first 5 defined cards + fill to 20
-  local example_cards_for_deck = {"Wooden Cow", "Pegasus", "Zeus", "Ares", "Helios"}
+  -- Example: 2 of each cards + fill to 20
+  local example_cards_for_deck = {"Wooden Cow", "Pegasus", "Zeus", "Ares", "Helios", "Demeter", "Dionysus", "Aphrodite", "Sword of Damocles", "Ship of Theseus", "Apollo", "Persephone"}
   for i = 1, 2 do
     for _, name in ipairs(example_cards_for_deck) do table.insert(deck_card_names, name) end
   end
@@ -78,7 +79,7 @@ function Player:play_card_from_hand_by_instance_id(card_instance_id, target_loca
     local card_idx_in_hand = nil
 
     for i, card_in_hand_instance in ipairs(self.hand) do
-        if card_in_hand_instance.unique_id_in_game == card_instance_id then -- Use unique_id_in_game
+        if card_in_hand_instance.unique_id_in_game == card_instance_id then 
             card_to_play = card_in_hand_instance
             card_idx_in_hand = i
             break

@@ -1,17 +1,17 @@
--- renderer.lua
+-- renderer
 
 local CardRenderer = {}
 
 CardRenderer.assets = {
     card_back_image = nil,
-    card_face_image = nil, -- Optional: a template image for the card face
+    card_face_image = nil, 
     font_title = nil,
     font_stats = nil,
     font_text = nil,
     loaded = false
 }
 
--- Default card dimensions (you can adjust these)
+-- card dimensions 
 CardRenderer.defaultWidth = 100
 CardRenderer.defaultHeight = 150
 
@@ -19,9 +19,8 @@ function CardRenderer.loadAssets()
     if CardRenderer.assets.loaded then return end
 
     -- Load fonts (adjust paths and sizes as needed)
-    -- Using a default font if specific ones aren't available for simplicity
     pcall(function() CardRenderer.assets.font_title = love.graphics.newFont("assets/fonts/your_title_font.ttf", 16) end)
-    if not CardRenderer.assets.font_title then CardRenderer.assets.font_title = love.graphics.newFont(16) end -- Fallback
+    if not CardRenderer.assets.font_title then CardRenderer.assets.font_title = love.graphics.newFont(16) end
 
     pcall(function() CardRenderer.assets.font_stats = love.graphics.newFont("assets/fonts/your_stats_font.ttf", 14) end)
     if not CardRenderer.assets.font_stats then CardRenderer.assets.font_stats = love.graphics.newFont(14) end
@@ -29,19 +28,18 @@ function CardRenderer.loadAssets()
     pcall(function() CardRenderer.assets.font_text = love.graphics.newFont("assets/fonts/your_text_font.ttf", 10) end)
     if not CardRenderer.assets.font_text then CardRenderer.assets.font_text = love.graphics.newFont(10) end
 
-    -- Load images (replace with your actual asset paths)
+    -- Load images
     local success_back, err_back = pcall(function()
-        CardRenderer.assets.card_back_image = love.graphics.newImage("assets/images/card_back.png")
+        CardRenderer.assets.card_back_image = love.graphics.newImage("assets/cardBack.png")
     end)
     if not success_back then
         print("Warning: Could not load card_back.png: " .. tostring(err_back))
     end
 
     local success_face, err_face = pcall(function()
-        -- CardRenderer.assets.card_face_image = love.graphics.newImage("assets/images/card_face_template.png")
-        -- If you have a template image. If not, we'll just draw colored rectangles.
+    --CardRenderer.assets.card_face_image = love.graphics.newImage("assets/images/card_face_template.png"
     end)
-    if not success_face and CardRenderer.assets.card_face_image then -- only print error if it was expected
+    if not success_face and CardRenderer.assets.card_face_image then 
         print("Warning: Could not load card_face_template.png: " .. tostring(err_face))
     end
 
@@ -50,10 +48,7 @@ function CardRenderer.loadAssets()
     print("CardRenderer assets loaded.")
 end
 
--- Main drawing function
--- card_obj: The card object from your game logic
--- x, y: Top-left coordinates to draw the card
--- w, h: Optional width and height, defaults to CardRenderer.defaultWidth/Height
+-- drawing function
 function CardRenderer.draw(card_obj, x, y, w, h)
     if not CardRenderer.assets.loaded then
         CardRenderer.loadAssets() -- Ensure assets are loaded
@@ -65,7 +60,7 @@ function CardRenderer.draw(card_obj, x, y, w, h)
     love.graphics.push()
     love.graphics.translate(x, y)
 
-    -- Draw card outline/background
+    -- draw card outline/background
     love.graphics.setColor(0.8, 0.8, 0.8) -- Light grey for card background
     love.graphics.rectangle("fill", 0, 0, width, height)
     love.graphics.setColor(0, 0, 0) -- Black for outline
@@ -79,7 +74,7 @@ function CardRenderer.draw(card_obj, x, y, w, h)
             love.graphics.draw(CardRenderer.assets.card_back_image, 0, 0, 0, width / CardRenderer.assets.card_back_image:getWidth(), height / CardRenderer.assets.card_back_image:getHeight())
         else
             -- Fallback if no image: simple pattern or color
-            love.graphics.setColor(0.3, 0.3, 0.7) -- Blueish
+            love.graphics.setColor(0.3, 0.3, 0.7) -- Blue
             love.graphics.rectangle("fill", 5, 5, width - 10, height - 10)
             love.graphics.setColor(1,1,1)
             love.graphics.setFont(CardRenderer.assets.font_title or love.graphics.getFont())
@@ -131,7 +126,7 @@ function CardRenderer.draw(card_obj, x, y, w, h)
     end
 
     love.graphics.pop()
-    love.graphics.setColor(1, 1, 1) -- Reset color
+    love.graphics.setColor(1, 1, 1) 
 end
 
 return CardRenderer

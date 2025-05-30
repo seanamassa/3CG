@@ -1,592 +1,387 @@
---main
+-- main
 
---[[
-  Greek Mythology 3CG - Lua Core Structure
-  This script provides a basic framework for the card game.
-  It includes structures for Cards, Players, Locations, and the Game itself.
-]]
+local Game = require("game")
+local CardRenderer = require("renderer")
+local Utils = require("utils")
 
--- =============================================================================
--- Utility Functions
--- =============================================================================
+-- Game state and UI variables
+local gameState
+local gameMessages = {}
+local currentPhase = "SETUP" -- SETUP, PLAYER_ACTION, SUBMITTED_BY_PLAYER, REVEAL, EOT_ABILITIES, SCORE, GAME_OVER
 
--- Simple function to clone a table (useful for creating card instances)
-function shallow_clone(original)
-  local copy = {}
-  for k, v in pairs(original) do
-    copy[k] = v
-  end
-  return copy
-end
-
--- Function to shuffle a deck (Fisher-Yates shuffle)
-function shuffle_deck(deck)
-  for i = #deck, 2, -1 do
-    local j = math.random(i)
-    deck[i], deck[j] = deck[j], deck[i]
-  end
-  return deck
-end
-
--- =============================================================================
--- Card Definition
--- =============================================================================
-
-Card = {}
-Card.__index = Card
-
-function Card.new(name, cost, power, text, ability_on_reveal, ability_on_end_of_turn, ability_ongoing, ability_on_discard)
-  local self = setmetatable({}, Card)
-  self.name = name
-  self.base_cost = cost
-  self.current_cost = cost
-  self.base_power = power
-  self.current_power = power
-  self.text = text -- Descriptive text
-  self.id = tostring(math.random(100000, 999999)) -- Unique ID for this instance
-
-  -- Placeholder for ability functions
-  -- These would be actual functions defined for specific cards
-  self.ability_on_reveal = ability_on_reveal or function(card_instance, game, player, location_idx)
-    -- print(card_instance.name .. " has no OnReveal ability.")
-  end
-  self.ability_on_end_of_turn = ability_on_end_of_turn or function(card_instance, game, player, location_idx)
-    -- print(card_instance.name .. " has no OnEndOfTurn ability.")
-  end
-  self.ability_ongoing = ability_ongoing or {} -- Could be a table of functions or flags
-   self.ability_on_discard = ability_on_discard or function(card_instance, game, player)
-    -- print(card_instance.name .. " has no OnDiscard ability.")
-  end
-
-  self.is_revealed = false
-  self.owner_id = nil -- Will be set when a player owns the card
-  return self
-end
-
-function Card:get_display_power()
-    return self.current_power
-end
-
-function Card:get_display_cost()
-    return self.current_cost
-end
-
--- Example: How you might define a specific card's abilities
--- This would typically be loaded from a card database
-
--- Placeholder for card database
--- In a real game, you'd load this from a file or a more structured data source
-CARD_DATABASE = {
-  ["Wooden Cow"]      = {cost = 1, power = 1, text = "A sturdy, if unremarkable, bovine construct."},
-  ["Pegasus"]         = {cost = 3, power = 5, text = "A majestic winged steed."},
-  ["Minotaur"]        = {cost = 5, power = 9, text = "A fearsome beast of the labyrinth."},
-  ["Titan"]           = {cost = 6, power = 12, text = "A being of immense, primordial power."},
-  ["Zeus"]            = {cost = 4, power = 4, text = "When Revealed: Lower the power of each card in your opponent's hand by 1.",
-    ability_on_reveal = function(card_instance, game, player, location_idx)
-      print(card_instance.name .. " reveals! Lowering opponent hand power.")
-      local opponent = game:get_opponent(player)
-      for _, card_in_hand in ipairs(opponent.hand) do
-        card_in_hand.current_power = math.max(0, card_in_hand.current_power - 1)
-        print("  - Reduced " .. card_in_hand.name .. " in opponent's hand to " .. card_in_hand.current_power .. " power.")
-      end
-    end
-  },
-  ["Ares"]            = {cost = 3, power = 2, text = "When Revealed: Gain +2 power for each enemy card here.",
-    ability_on_reveal = function(card_instance, game, player, location_idx)
-      print(card_instance.name .. " reveals!")
-      local enemy_cards_at_location = 0
-      local opponent = game:get_opponent(player)
-      local location = game.locations[location_idx]
-      for _, slot_card_id in ipairs(location.slots[opponent.id]) do
-        if slot_card_id then
-          local slot_card = game:get_card_instance_by_id(slot_card_id) -- You'll need a way to get card instance
-          if slot_card and slot_card.is_revealed then
-             enemy_cards_at_location = enemy_cards_at_location + 1
-          end
-        end
-      end
-      card_instance.current_power = card_instance.current_power + (2 * enemy_cards_at_location)
-      print("  - Ares gains " .. (2 * enemy_cards_at_location) .. " power. New power: " .. card_instance.current_power)
-    end
-  },
-  -- ... Add all other cards from your list here with their respective abilities
-  ["Helios"]          = {cost = 3, power = 7, text = "End of Turn: Discard this.",
-    ability_on_end_of_turn = function(card_instance, game, player, location_idx)
-      print(card_instance.name .. " activates End of Turn: Discarding itself.")
-      game:discard_card_from_play(card_instance, player, location_idx)
-    end
-  },
+-- Drag and Drop state
+local draggedCardInfo = {
+    card_instance = nil,
+    original_hand_idx = nil,
+    offset_x = 0,
+    offset_y = 0,
+    current_screen_x = 0,
+    current_screen_y = 0
 }
 
+-- UI Element Definitions
+local handCardVisuals = {}
+local locationSlotDropZones = {}
+local submitButtonRect = {x = 0, y = 0, width = 150, height = 50, text = "Submit Turn"} 
 
--- =============================================================================
--- Player Definition
--- =============================================================================
+local CARD_WIDTH = 100
+local CARD_HEIGHT = 150
 
-Player = {}
-Player.__index = Player
-
-function Player.new(id, name)
-  local self = setmetatable({}, Player)
-  self.id = id
-  self.name = name
-  self.deck = {}
-  self.hand = {}
-  self.discard_pile = {}
-  self.mana = 0
-  self.score = 0
-  self.max_hand_size = 7
-  return self
+-- Helper function to capture print statements for on-screen display
+local oldPrint = print
+function print(...)
+    local parts = {}
+    for i = 1, select('#', ...) do parts[i] = tostring(select(i, ...)) end
+    local message = table.concat(parts, "\t")
+    oldPrint(message)
+    table.insert(gameMessages, 1, message)
+    if #gameMessages > 15 then table.remove(gameMessages) end
 end
 
-function Player:create_deck(card_db)
-  -- For simplicity, adding 2 of each card from a small subset of the DB
-  -- In a real game, players would build decks or have pre-defined ones.
-  local deck_card_names = {"Wooden Cow", "Pegasus", "Titan", "Ares", "Helios", "Demeter", "Dionysis", "Ship of Theseus", "Sword of Damocles", "Aphrodite", "Apollo", "Persepone", "Zeus", "Persephone"} -- Example 14 cards
-  -- Fill to 20
-  for i = 1, 6 do
-    table.insert(deck_card_names, "Wooden Cow")
-  end
+local function isPointInRect(px, py, rx, ry, rw, rh)
+    return px >= rx and px <= rx + rw and py >= ry and py <= ry + rh
+end
 
-
-  for _, card_name in ipairs(deck_card_names) do
-    local card_data = card_db[card_name]
-    if card_data then
-      -- Create a new instance for each card in the deck
-      local new_card = Card.new(card_name, card_data.cost, card_data.power, card_data.text, card_data.ability_on_reveal, card_data.ability_on_end_of_turn, card_data.ability_ongoing, card_data.ability_on_discard)
-      new_card.owner_id = self.id
-      table.insert(self.deck, new_card)
-    else
-      print("Warning: Card not found in database: " .. card_name)
+function updatePlayer1HandCardVisuals()
+    if not gameState or not gameState.players[1] then
+        handCardVisuals = {}
+        return
     end
-  end
-  shuffle_deck(self.deck)
-  print(self.name .. "'s deck created with " .. #self.deck .. " cards.")
-end
+    
+    handCardVisuals = {}
+    local player1_hand = gameState.players[1].hand
+    local hand_y = love.graphics.getHeight() - CARD_HEIGHT - 20
+    local card_spacing = 10
+    local total_hand_width = (#player1_hand * CARD_WIDTH) + (math.max(0, #player1_hand - 1) * card_spacing)
+    local hand_x_start = (love.graphics.getWidth() - total_hand_width) / 2
 
-function Player:draw_card()
-  if #self.deck == 0 then
-    print(self.name .. " has no cards left to draw!")
-    return nil
-  end
-  if #self.hand >= self.max_hand_size then
-    local discarded_card = table.remove(self.deck, 1)
-    print(self.name .. " hand is full (" .. #self.hand .. "/" .. self.max_hand_size .. "). Drawn card " .. discarded_card.name .. " is discarded.")
-    table.insert(self.discard_pile, discarded_card)
-    if discarded_card.ability_on_discard then
-        discarded_card:ability_on_discard(discarded_card, Game, self) -- Assuming Game is accessible globally or passed
+    for i, card_in_hand_instance in ipairs(player1_hand) do
+        table.insert(handCardVisuals, {
+            x = hand_x_start + (i - 1) * (CARD_WIDTH + card_spacing),
+            y = hand_y,
+            width = CARD_WIDTH,
+            height = CARD_HEIGHT,
+            card_instance = card_in_hand_instance
+        })
     end
-    return nil
-  end
-  local drawn_card = table.remove(self.deck, 1)
-  table.insert(self.hand, drawn_card)
-  print(self.name .. " drew " .. drawn_card.name .. ". Hand size: " .. #self.hand)
-  return drawn_card
 end
 
-function Player:play_card(card_id_to_play, location_idx, game)
-    local card_to_play = nil
-    local card_idx_in_hand = nil
+function defineLocationSlotDropZones()
+    if not gameState then return end
+    locationSlotDropZones = {}
+    local loc_visual_width = (CARD_WIDTH * gameState.locations[1].max_slots_per_player) + (10 * (gameState.locations[1].max_slots_per_player -1))
+    local total_width_for_all_locs = (loc_visual_width * #gameState.locations) + (40 * (#gameState.locations - 1))
+    local loc_start_x_overall = (love.graphics.getWidth() - total_width_for_all_locs) / 2
 
-    for i, card_in_hand in ipairs(self.hand) do
-        if card_in_hand.id == card_id_to_play then
-            card_to_play = card_in_hand
-            card_idx_in_hand = i
-            break
+    local p1_slots_y = love.graphics.getHeight() / 2 + 10 -- Player 1 slots (bottom half of middle)
+    local p2_slots_y = love.graphics.getHeight() / 2 - CARD_HEIGHT - 10 -- Player 2 slots (top half of middle)
+
+    for loc_idx = 1, #gameState.locations do
+        local current_loc_block_start_x = loc_start_x_overall + (loc_idx - 1) * (loc_visual_width + 40)
+        for slot_idx = 1, gameState.locations[loc_idx].max_slots_per_player do
+            table.insert(locationSlotDropZones, {
+                x = current_loc_block_start_x + (slot_idx - 1) * (CARD_WIDTH + 10),
+                y = p1_slots_y, width = CARD_WIDTH, height = CARD_HEIGHT,
+                location_idx = loc_idx, slot_idx = slot_idx, player_id = gameState.players[1].id
+            })
+            table.insert(locationSlotDropZones, {
+                x = current_loc_block_start_x + (slot_idx - 1) * (CARD_WIDTH + 10),
+                y = p2_slots_y, width = CARD_WIDTH, height = CARD_HEIGHT,
+                location_idx = loc_idx, slot_idx = slot_idx, player_id = gameState.players[2].id
+            })
         end
     end
-
-    if not card_to_play then
-        print("Error: " .. self.name .. " does not have card with ID " .. card_id_to_play .. " in hand.")
-        return false
-    end
-
-    if card_to_play.current_cost > self.mana then
-        print("Error: " .. self.name .. " does not have enough mana to play " .. card_to_play.name .. " (Cost: " .. card_to_play.current_cost .. ", Mana: " .. self.mana .. ")")
-        return false
-    end
-
-    local location = game.locations[location_idx]
-    if not location then
-        print("Error: Invalid location index: " .. location_idx)
-        return false
-    end
-
-    -- Find an empty slot
-    local empty_slot_idx = nil
-    for i = 1, #location.slots[self.id] do
-        if not location.slots[self.id][i] then
-            empty_slot_idx = i
-            break
-        end
-    end
-
-    if not empty_slot_idx then
-        print("Error: No empty slots for " .. self.name .. " at location " .. location_idx)
-        return false
-    end
-
-    -- Stage the card (move from hand to location slot)
-    self.mana = self.mana - card_to_play.current_cost
-    location.slots[self.id][empty_slot_idx] = card_to_play.id -- Store card ID in slot
-    table.remove(self.hand, card_idx_in_hand)
-    card_to_play.is_revealed = false -- Ensure it's marked as not revealed yet
-    game.staged_cards_this_turn[self.id] = game.staged_cards_this_turn[self.id] or {}
-    table.insert(game.staged_cards_this_turn[self.id], {card_id = card_to_play.id, location_idx = location_idx, slot_idx = empty_slot_idx})
-
-
-    print(self.name .. " played " .. card_to_play.name .. " to location " .. location_idx .. ", slot " .. empty_slot_idx .. ". Mana left: " .. self.mana)
-    return true
 end
 
+-- load
+function love.load()
+    math.randomseed(os.time())
+    love.graphics.setFont(love.graphics.newFont(12))
+    love.window.setTitle("Card Clash of the Gods") 
 
--- =============================================================================
--- Location Definition
--- =============================================================================
+    CardRenderer.loadAssets()
 
-Location = {}
-Location.__index = Location
+    -- submit button position
+    submitButtonRect.x = love.graphics.getWidth() - submitButtonRect.width - 20
+    submitButtonRect.y = love.graphics.getHeight() - submitButtonRect.height - 20
 
-function Location.new(idx, name)
-  local self = setmetatable({}, Location)
-  self.id = idx
-  self.name = name
-  self.slots = {} -- slots[player_id][slot_index] = card_id
-  self.max_slots_per_player = 4
-  return self
-end
 
-function Location:add_player_slots(player_id)
-    self.slots[player_id] = {}
-    for i = 1, self.max_slots_per_player do
-        self.slots[player_id][i] = nil -- nil means empty slot
+    gameState = Game.new()
+    gameState:setup_game()
+    
+    defineLocationSlotDropZones() 
+    updatePlayer1HandCardVisuals() 
+
+    currentPhase = "START_TURN"
+    print("Game Loaded. Current phase: " .. currentPhase)
+    if gameState and not gameState.game_over then
+        gameState:start_turn_procedure()
+        updatePlayer1HandCardVisuals() 
+        currentPhase = "PLAYER_ACTION"
+        print("First turn (" .. gameState.current_turn .. "). Phase: " .. currentPhase .. ". Player 1 Mana: " .. gameState.players[1].mana)
     end
 end
 
-function Location:get_player_power(player_id, game)
-    local total_power = 0
-    if self.slots[player_id] then
-        for _, card_id in ipairs(self.slots[player_id]) do
-            if card_id then
-                local card = game:get_card_instance_by_id(card_id)
-                if card and card.is_revealed then
-                    total_power = total_power + card:get_display_power()
+function simulate_ai_player_actions(player, game)
+    if not player or not game or game.game_over then return end
+    print("\n--- Simulating AI (" .. player.name .. ") Actions for Turn " .. game.current_turn .. " ---")
+    local cards_played_by_ai = 0
+    local max_ai_plays_per_turn = 4 
+
+    local temp_hand_for_ai = {}
+    for _, card_in_hand in ipairs(player.hand) do table.insert(temp_hand_for_ai, card_in_hand) end
+
+    for _, card_to_play in ipairs(temp_hand_for_ai) do
+        if cards_played_by_ai >= max_ai_plays_per_turn then break end
+        if player.mana == 0 then break end
+
+        if card_to_play:get_display_cost() <= player.mana then
+            local played_this_card_successfully = false
+            for attempt = 1, #game.locations * 2 do 
+                local target_loc_idx = math.random(1, #game.locations)
+                if player:play_card_from_hand_by_instance_id(card_to_play.unique_id_in_game, target_loc_idx, game) then
+                    print(player.name .. " AI successfully staged " .. card_to_play.name .. " to Loc " .. target_loc_idx)
+                    cards_played_by_ai = cards_played_by_ai + 1
+                    played_this_card_successfully = true
+                    break 
                 end
             end
+            if not played_this_card_successfully then
+                 print(player.name .. " AI failed to find a slot for " .. card_to_play.name .. " after several attempts.")
+            end
         end
+        if played_this_card_successfully and cards_played_by_ai >= max_ai_plays_per_turn then break end
     end
-    return total_power
-end
-
--- =============================================================================
--- Game Definition
--- =============================================================================
-
-Game = {}
-Game.__index = Game
-
-function Game.new()
-  local self = setmetatable({}, Game)
-  self.players = {
-    Player.new("player1", "Player One"),
-    Player.new("player2", "Opponent AI") -- Or Player Two
-  }
-  self.locations = {
-    Location.new(1, "Mount Olympus"),
-    Location.new(2, "The Underworld"),
-    Location.new(3, "Aegean Sea")
-  }
-  self.current_turn = 0
-  self.winning_score = 20
-  self.game_over = false
-  self.winner = nil
-  self.priority_player_idx = nil -- 1 or 2
-
-  -- Initialize player slots at locations
-  for _, loc in ipairs(self.locations) do
-    loc:add_player_slots(self.players[1].id)
-    loc:add_player_slots(self.players[2].id)
-  end
-
-  -- Store all card instances in the game for easy lookup by ID
-  self.all_card_instances = {} -- map of card_id -> card_object
-
-  self.staged_cards_this_turn = {} -- To track cards played but not yet revealed: staged_cards_this_turn[player_id] = {{card_id, location_idx, slot_idx}, ...}
-
-  return self
-end
-
-function Game:register_card_instance(card_instance)
-    self.all_card_instances[card_instance.id] = card_instance
-end
-
-function Game:get_card_instance_by_id(card_id)
-    return self.all_card_instances[card_id]
-end
-
-
-function Game:setup_game()
-  print("Setting up game...")
-  for _, player in ipairs(self.players) do
-    player:create_deck(CARD_DATABASE)
-    -- Register all deck cards to the game's instance tracker
-    for _, card_in_deck in ipairs(player.deck) do
-        self:register_card_instance(card_in_deck)
-    end
-
-    for _ = 1, 3 do -- Starting hand
-      player:draw_card()
-    end
-  end
-  print("Game setup complete.")
-end
-
-function Game:get_opponent(player)
-    if player.id == self.players[1].id then
-        return self.players[2]
-    else
-        return self.players[1]
+    if cards_played_by_ai == 0 then
+        print(player.name .. " AI did not play any card this turn.")
     end
 end
 
-function Game:start_turn()
-  self.current_turn = self.current_turn + 1
-  print("\n--- Starting Turn " .. self.current_turn .. " ---")
-  self.staged_cards_this_turn = {} -- Reset staged cards
+function love.update(dt)
+    if not gameState or gameState.game_over then return end
 
-  for _, player in ipairs(self.players) do
-    player.mana = self.current_turn
-    print(player.name .. " mana set to " .. player.mana)
-    player:draw_card() -- Both players draw at start of turn (including turn 1 as per rules)
-  end
-end
-
-function Game:determine_priority_player()
-    print("Determining priority player...")
-    if self.players[1].score > self.players[2].score then
-        self.priority_player_idx = 1
-        print(self.players[1].name .. " has priority (higher score).")
-    elseif self.players[2].score > self.players[1].score then
-        self.priority_player_idx = 2
-        print(self.players[2].name .. " has priority (higher score).")
-    else
-        -- Tie in score, or start of game
-        if math.random(2) == 1 then
-            self.priority_player_idx = 1
-            print("Scores tied. Coin flip: " .. self.players[1].name .. " wins priority.")
+    if currentPhase == "SUBMITTED_BY_PLAYER" then
+        simulate_ai_player_actions(gameState.players[2], gameState)
+        currentPhase = "REVEAL"
+        print("AI actions simulated. Current phase: " .. currentPhase)
+    elseif currentPhase == "REVEAL" then
+        gameState:reveal_phase_procedure()
+        currentPhase = "EOT_ABILITIES"
+        print("Reveal phase complete. Current phase: " .. currentPhase)
+    elseif currentPhase == "EOT_ABILITIES" then
+        gameState:end_of_turn_abilities_procedure()
+        currentPhase = "SCORE"
+        print("End of Turn abilities complete. Current phase: " .. currentPhase)
+    elseif currentPhase == "SCORE" then
+        gameState:scoring_phase_procedure()
+        if gameState:check_win_condition_procedure() then
+            currentPhase = "GAME_OVER"
+            print("Win condition met. Current phase: " .. currentPhase)
         else
-            self.priority_player_idx = 2
-            print("Scores tied. Coin flip: " .. self.players[2].name .. " wins priority.")
+            currentPhase = "START_TURN"
+            print("Scoring complete. Next turn. Current phase: " .. currentPhase)
         end
+    elseif currentPhase == "START_TURN" then
+         gameState:start_turn_procedure()
+         updatePlayer1HandCardVisuals() 
+         currentPhase = "PLAYER_ACTION"
+         print("New turn (".. gameState.current_turn ..") started. Phase: " .. currentPhase .. ". Player 1 Mana: " .. gameState.players[1].mana)
     end
 end
 
-function Game:reveal_phase()
-    print("\n--- Reveal Phase ---")
-    self:determine_priority_player()
+function love.mousepressed(mx, my, button, istouch, presses)
+    if not gameState or gameState.game_over then return end
 
-    local first_player = self.players[self.priority_player_idx]
-    local second_player_idx = (self.priority_player_idx == 1) and 2 or 1
-    local second_player = self.players[second_player_idx]
+    if button == 1 then 
+        if currentPhase == "PLAYER_ACTION" then
+            if isPointInRect(mx, my, submitButtonRect.x, submitButtonRect.y, submitButtonRect.width, submitButtonRect.height) then
+                print("Player 1 clicked Submit Button.")
+                currentPhase = "SUBMITTED_BY_PLAYER"
+                draggedCardInfo.card_instance = nil 
+                return
+            end
 
-    local function reveal_player_cards(player_to_reveal)
-        print("Revealing cards for " .. player_to_reveal.name .. ":")
-        if self.staged_cards_this_turn[player_to_reveal.id] then
-            for _, play_info in ipairs(self.staged_cards_this_turn[player_to_reveal.id]) do
-                local card = self:get_card_instance_by_id(play_info.card_id)
-                if card then
-                    card.is_revealed = true
-                    print("  - Revealed " .. card.name .. " (Power: " .. card.current_power .. ") at Location " .. play_info.location_idx .. ", Slot " .. play_info.slot_idx)
-                    if card.ability_on_reveal then
-                        card:ability_on_reveal(card, self, player_to_reveal, play_info.location_idx)
+            updatePlayer1HandCardVisuals() 
+            for i = #handCardVisuals, 1, -1 do 
+                local handCardVisual = handCardVisuals[i]
+                if isPointInRect(mx, my, handCardVisual.x, handCardVisual.y, handCardVisual.width, handCardVisual.height) then
+                    local card_to_drag = handCardVisual.card_instance
+                    if card_to_drag:get_display_cost() <= gameState.players[1].mana then
+                        draggedCardInfo.card_instance = card_to_drag
+                        draggedCardInfo.original_hand_idx = i 
+                        draggedCardInfo.offset_x = mx - handCardVisual.x
+                        draggedCardInfo.offset_y = my - handCardVisual.y
+                        draggedCardInfo.current_screen_x = handCardVisual.x
+                        draggedCardInfo.current_screen_y = handCardVisual.y
+                        print("Dragging card: " .. draggedCardInfo.card_instance.name)
+                        return 
+                    else
+                        print(card_to_drag.name .. " is too expensive (Cost: " .. card_to_drag:get_display_cost() .. ", Mana: " .. gameState.players[1].mana .. ")")
                     end
-                    -- TODO: Implement logic for ongoing abilities activating
-                else
-                    print("  - Error: Could not find card instance for ID " .. play_info.card_id)
                 end
             end
-        else
-            print("  - " .. player_to_reveal.name .. " played no cards this turn.")
         end
     end
-
-    reveal_player_cards(first_player)
-    reveal_player_cards(second_player)
-
-    self.staged_cards_this_turn = {} -- Clear after reveal
 end
 
-
-function Game:scoring_phase()
-  print("\n--- Scoring Phase ---")
-  for _, loc in ipairs(self.locations) do
-    local p1_power = loc:get_player_power(self.players[1].id, self)
-    local p2_power = loc:get_player_power(self.players[2].id, self)
-
-    print("Location " .. loc.id .. " (" .. loc.name .. "): " .. self.players[1].name .. " Power: " .. p1_power .. ", " .. self.players[2].name .. " Power: " .. p2_power)
-
-    if p1_power > p2_power then
-      local points_earned = p1_power - p2_power
-      self.players[1].score = self.players[1].score + points_earned
-      print("  " .. self.players[1].name .. " earns " .. points_earned .. " points. Total: " .. self.players[1].score)
-    elseif p2_power > p1_power then
-      local points_earned = p2_power - p1_power
-      self.players[2].score = self.players[2].score + points_earned
-      print("  " .. self.players[2].name .. " earns " .. points_earned .. " points. Total: " .. self.players[2].score)
-    else
-      print("  Power tied at Location " .. loc.id .. ". No points awarded.")
+function love.mousemoved(mx, my, dx, dy, istouch)
+    if draggedCardInfo.card_instance then
+        draggedCardInfo.current_screen_x = mx - draggedCardInfo.offset_x
+        draggedCardInfo.current_screen_y = my - draggedCardInfo.offset_y
     end
-  end
 end
 
-function Game:end_of_turn_abilities_phase()
-    print("\n--- End of Turn Abilities Phase ---")
-    -- Iterate through all revealed cards in play for both players
-    for _, player in ipairs(self.players) do
-        for loc_idx, location in ipairs(self.locations) do
-            if location.slots[player.id] then
-                for slot_idx, card_id in ipairs(location.slots[player.id]) do
-                    if card_id then
-                        local card = self:get_card_instance_by_id(card_id)
-                        if card and card.is_revealed and card.ability_on_end_of_turn then
-                            print("  Activating End of Turn for " .. card.name .. " (Owner: " .. player.name .. ")")
-                            card:ability_on_end_of_turn(card, self, player, loc_idx)
-                            -- Card might have been discarded, check if it's still in the slot
-                            if self.locations[loc_idx].slots[player.id][slot_idx] ~= card_id then
-                                print("    " .. card.name .. " was removed from play by its own EOT effect.")
-                            end
+function love.mousereleased(mx, my, button, istouch)
+    if not gameState or gameState.game_over then return end
+
+    if button == 1 and draggedCardInfo.card_instance then
+        local card_being_dragged = draggedCardInfo.card_instance
+        print("Dropped card: " .. card_being_dragged.name .. " at " .. mx .. "," .. my)
+        
+        local successfully_placed_on_board = false
+        defineLocationSlotDropZones() 
+
+        for _, drop_zone in ipairs(locationSlotDropZones) do
+            if drop_zone.player_id == gameState.players[1].id then 
+                if isPointInRect(mx, my, drop_zone.x, drop_zone.y, drop_zone.width, drop_zone.height) then
+                    if not gameState.locations[drop_zone.location_idx].slots[drop_zone.player_id][drop_zone.slot_idx] then
+                        if gameState.players[1]:play_card_from_hand_by_instance_id(card_being_dragged.unique_id_in_game, drop_zone.location_idx, gameState) then
+                            print("Successfully played " .. card_being_dragged.name .. " to Loc " .. drop_zone.location_idx .. ", Slot " .. drop_zone.slot_idx)
+                            successfully_placed_on_board = true
+                            updatePlayer1HandCardVisuals() 
+                        else
+                            print("Backend: Failed to play " .. card_being_dragged.name)
                         end
+                    else
+                        print("Slot " .. drop_zone.slot_idx .. " at Loc " .. drop_zone.location_idx .. " is occupied.")
                     end
+                    break 
                 end
             end
         end
+
+        if not successfully_placed_on_board then
+            print(card_being_dragged.name .. " returned to hand (invalid drop/play failed).")
+        end
+        draggedCardInfo.card_instance = nil 
     end
 end
 
-
-function Game:check_win_condition()
-  local p1_wins = self.players[1].score >= self.winning_score
-  local p2_wins = self.players[2].score >= self.winning_score
-
-  if p1_wins and p2_wins then
-    if self.players[1].score > self.players[2].score then
-      self.winner = self.players[1]
-    elseif self.players[2].score > self.players[1].score then
-      self.winner = self.players[2]
-    else
-      print("Game ends in a DRAW by score! (Both reached " .. self.winning_score .. "+ with same score)")
-      -- Or handle this as no winner, or another tie-break rule
+function love.keypressed(key)
+    if key == "escape" then
+        love.event.quit()
     end
-  elseif p1_wins then
-    self.winner = self.players[1]
-  elseif p2_wins then
-    self.winner = self.players[2]
-  end
+    if not gameState or gameState.game_over then return end
 
-  if self.winner then
-    self.game_over = true
-    print("\nGAME OVER! " .. self.winner.name .. " wins with " .. self.winner.score .. " points!")
-  elseif self.current_turn >= 20 then -- Arbitrary turn limit to prevent infinite games
-      self.game_over = true
-      print("\nGAME OVER! Turn limit reached. Final Scores: P1=" .. self.players[1].score .. ", P2=" .. self.players[2].score)
-      if self.players[1].score > self.players[2].score then self.winner = self.players[1] print(self.players[1].name .. " wins on turn limit.")
-      elseif self.players[2].score > self.players[1].score then self.winner = self.players[2] print(self.players[2].name .. " wins on turn limit.")
-      else print("It's a draw on turn limit!") end
-  end
+    if key == "space" then
+        if currentPhase == "PLAYER_ACTION" then
+            print("Player 1 submitted turn (SPACEBAR).")
+            currentPhase = "SUBMITTED_BY_PLAYER"
+            draggedCardInfo.card_instance = nil
+        end
+    end
+
+    if gameState.game_over and key == "r" then
+        print("Resetting game...")
+        gameState = Game.new()
+        gameState:setup_game()
+        defineLocationSlotDropZones()
+        updatePlayer1HandCardVisuals()
+        currentPhase = "START_TURN"
+        if gameState then
+            gameState:start_turn_procedure()
+            updatePlayer1HandCardVisuals()
+            currentPhase = "PLAYER_ACTION"
+        end
+        gameMessages = {}
+        print("New game started! Phase: " .. currentPhase)
+    end
 end
 
-function Game:discard_card_from_play(card_instance, player, location_idx)
-    local location = self.locations[location_idx]
-    local found_and_removed = false
-    if location and location.slots[player.id] then
-        for i, slot_card_id in ipairs(location.slots[player.id]) do
-            if slot_card_id == card_instance.id then
-                location.slots[player.id][i] = nil -- Remove from slot
-                table.insert(player.discard_pile, card_instance)
-                card_instance.is_revealed = false -- Reset state
-                print("  " .. card_instance.name .. " moved from play (Loc " .. location_idx .. ") to " .. player.name .. "'s discard pile.")
-                if card_instance.ability_on_discard then
-                    card_instance:ability_on_discard(card_instance, self, player)
-                end
-                found_and_removed = true
-                break
+--draw
+function love.draw()
+    if not gameState then return end
+
+    love.graphics.setBackgroundColor(0.12, 0.12, 0.18) 
+
+    defineLocationSlotDropZones() 
+    for _, zone_info in ipairs(locationSlotDropZones) do
+        local is_p1_zone = zone_info.player_id == gameState.players[1].id
+        local is_occupied = gameState.locations[zone_info.location_idx].slots[zone_info.player_id][zone_info.slot_idx] ~= nil
+        
+        if is_p1_zone then 
+             if is_occupied then love.graphics.setColor(0.25,0.3,0.25, 0.7) else love.graphics.setColor(0.3,0.3,0.35, 0.7) end
+             love.graphics.rectangle("fill", zone_info.x, zone_info.y, zone_info.width, zone_info.height)
+             love.graphics.setColor(0.5,0.5,0.6, 0.8)
+             love.graphics.rectangle("line", zone_info.x, zone_info.y, zone_info.width, zone_info.height)
+        else 
+             if is_occupied then love.graphics.setColor(0.3,0.25,0.25, 0.7) else love.graphics.setColor(0.2,0.2,0.2, 0.5) end
+             love.graphics.rectangle("fill", zone_info.x, zone_info.y, zone_info.width, zone_info.height)
+        end
+    end
+    love.graphics.setColor(1,1,1) 
+
+    for _, zone_info in ipairs(locationSlotDropZones) do 
+        local card_unique_id = gameState.locations[zone_info.location_idx].slots[zone_info.player_id][zone_info.slot_idx]
+        if card_unique_id then
+            local card_on_board = gameState:get_card_instance_by_id(card_unique_id)
+            if card_on_board then
+                CardRenderer.draw(card_on_board, zone_info.x, zone_info.y, zone_info.width, zone_info.height)
             end
         end
     end
-    if not found_and_removed then
-        print("  Warning: Could not find " .. card_instance.name .. " to discard from play for " .. player.name .. " at Loc " .. location_idx)
-    end
-end
 
-
--- =============================================================================
--- Main Game Loop (Simplified Example)
--- =============================================================================
-
-function main()
-  math.randomseed(os.time()) -- Seed random number generator
-
-  local game = Game.new()
-  game:setup_game()
-
-  -- Simple loop for a few turns
-  while not game.game_over do
-    game:start_turn()
-
-    -- Staging Phase (Simulated - needs player input in a real game)
-    print("\n--- Staging Phase (Player Actions) ---")
-    -- Player 1 plays
-    if #game.players[1].hand > 0 and game.players[1].mana > 0 then
-        local card_to_play_p1 = game.players[1].hand[1] -- Play first card if possible
-        if card_to_play_p1.current_cost <= game.players[1].mana then
-            -- Play to a random available location (simplified)
-            local played_loc_p1 = math.random(1, #game.locations)
-            game.players[1]:play_card(card_to_play_p1.id, played_loc_p1, game)
-        else
-            print(game.players[1].name .. " cannot afford " .. card_to_play_p1.name)
+    -- draw Player 1's Hand
+    updatePlayer1HandCardVisuals() 
+    for _, handCardVisual in ipairs(handCardVisuals) do
+        if not (draggedCardInfo.card_instance and draggedCardInfo.card_instance.unique_id_in_game == handCardVisual.card_instance.unique_id_in_game) then
+            CardRenderer.draw(handCardVisual.card_instance, handCardVisual.x, handCardVisual.y, handCardVisual.width, handCardVisual.height)
         end
-    else
-        print(game.players[1].name .. " has no cards to play or no mana.")
     end
 
-    -- Player 2 plays (AI / second player)
-    if #game.players[2].hand > 0 and game.players[2].mana > 0 then
-        local card_to_play_p2 = game.players[2].hand[1] -- Play first card if possible
-         if card_to_play_p2.current_cost <= game.players[2].mana then
-            local played_loc_p2 = math.random(1, #game.locations)
-            game.players[2]:play_card(card_to_play_p2.id, played_loc_p2, game)
-        else
-            print(game.players[2].name .. " cannot afford " .. card_to_play_p2.name)
-        end
-    else
-        print(game.players[2].name .. " has no cards to play or no mana.")
+    -- draw dragged card
+    if draggedCardInfo.card_instance then
+        love.graphics.setColor(1,1,1,0.85) 
+        CardRenderer.draw(draggedCardInfo.card_instance, draggedCardInfo.current_screen_x, draggedCardInfo.current_screen_y, CARD_WIDTH, CARD_HEIGHT)
+        love.graphics.setColor(1,1,1,1) 
     end
 
-    -- Submission is implicit here for simulation
-
-    game:reveal_phase()
-    game:end_of_turn_abilities_phase() -- Process EOT abilities
-    game:scoring_phase()
-    game:check_win_condition()
-
-    -- Display board state (simplified)
-    print("\n--- Board State (End of Turn " .. game.current_turn .. ") ---")
-    for _, player in ipairs(game.players) do
-        print(player.name .. " - Score: " .. player.score .. ", Mana: " .. player.mana .. ", Hand: " .. #player.hand .. ", Deck: " .. #player.deck .. ", Discard: " .. #player.discard_pile)
+    -- submit button
+    if currentPhase == "PLAYER_ACTION" then
+        local sb = submitButtonRect
+        local mx_b, my_b = love.mouse.getPosition() -- Renamed to avoid conflict
+        if isPointInRect(mx_b,my_b, sb.x, sb.y, sb.width, sb.height) then
+            love.graphics.setColor(0.4, 0.8, 0.4, 0.9) else love.graphics.setColor(0.3, 0.7, 0.3, 0.9) end
+        love.graphics.rectangle("fill", sb.x, sb.y, sb.width, sb.height)
+        love.graphics.setColor(0.1,0.1,0.1) love.graphics.rectangle("line", sb.x, sb.y, sb.width, sb.height)
+        love.graphics.setColor(1, 1, 1)
+        love.graphics.printf(sb.text, sb.x, sb.y + sb.height / 2 - (love.graphics.getFont():getHeight()/2) - 2, sb.width, "center")
     end
-    for _, loc in ipairs(game.locations) do
-        local p1_cards_str = ""
-        for _, c_id in ipairs(loc.slots[game.players[1].id]) do if c_id then local c = game:get_card_instance_by_id(c_id); p1_cards_str = p1_cards_str .. c.name .. "("..c.current_power..") " else p1_cards_str = p1_cards_str .. "[E] " end end
-        local p2_cards_str = ""
-        for _, c_id in ipairs(loc.slots[game.players[2].id]) do if c_id then local c = game:get_card_instance_by_id(c_id); p2_cards_str = p2_cards_str .. c.name .. "("..c.current_power..") " else p2_cards_str = p2_cards_str .. "[E] " end end
-        print("  Loc " .. loc.id .. ": P1> " .. p1_cards_str .. " | P2> " .. p2_cards_str)
-    end
+    love.graphics.setColor(1,1,1)
 
-    if game.game_over then
-      break
+    -- log messages
+    love.graphics.push()
+    love.graphics.translate(5,5)
+    love.graphics.setColor(0,0,0,0.65) 
+    love.graphics.rectangle("fill", 0, 0, math.min(600, love.graphics.getWidth() - 10), (#gameMessages * 14) + 10)
+    love.graphics.setColor(1,1,0.7) 
+    for i, msg in ipairs(gameMessages) do love.graphics.print(msg, 5, 5 + (i-1) * 14) end
+    love.graphics.pop()
+
+    -- status text (Turn, Phase, Scores)
+    local status_text_y = love.graphics.getHeight() - 130
+    local p1_stat = string.format("%s (P1) - Score: %d, Mana: %d, Hand: %d", gameState.players[1].name, gameState.players[1].score, gameState.players[1].mana, #gameState.players[1].hand)
+    local p2_stat = string.format("%s (P2) - Score: %d, Mana: %d, Hand: %d", gameState.players[2].name, gameState.players[2].score, gameState.players[2].mana, #gameState.players[2].hand)
+    
+    love.graphics.setColor(0.9,0.9,0.9)
+    love.graphics.print(p1_stat, 10, status_text_y)
+    love.graphics.print(p2_stat, 10, status_text_y + 20)
+
+    local phaseMsg = "Turn: " .. gameState.current_turn .. " | Phase: " .. currentPhase
+    if gameState.game_over then
+        phaseMsg = phaseMsg .. "\nGAME OVER! Winner: " .. (gameState.winner and gameState.winner.name or "None") .. "\nPress [R] to Play Again."
+    elseif currentPhase == "PLAYER_ACTION" then
+        phaseMsg = phaseMsg .. "\nDrag cards to play. Click Submit Turn or Press SPACE."
     end
-  end
+    love.graphics.printf(phaseMsg, 10, status_text_y + 40, love.graphics.getWidth() - 20, "left")
 end
-
--- Run the game
-main()

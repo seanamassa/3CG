@@ -1,12 +1,12 @@
--- location.lua
+-- location
 local Location = {}
 Location.__index = Location
 
 function Location.new(idx, name)
   local self = setmetatable({}, Location)
-  self.id = idx -- Numerical index (1, 2, or 3)
+  self.id = idx 
   self.name = name
-  self.slots = {} -- slots[player_id_string][slot_index_number] = card_unique_id_in_game
+  self.slots = {} 
   self.max_slots_per_player = 4
   return self
 end
@@ -14,7 +14,7 @@ end
 function Location:add_player_slots(player_id_string)
     self.slots[player_id_string] = {} -- Initialize as an empty table for ordered slots
     for i = 1, self.max_slots_per_player do
-        self.slots[player_id_string][i] = nil -- nil means empty slot
+        self.slots[player_id_string][i] = nil 
     end
 end
 
